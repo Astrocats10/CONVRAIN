@@ -1,6 +1,6 @@
 {
   "scan_time": "2026-05-20T07:20:00Z",
-  "model_version": "onset-hazard-lightgbm+peak-hazard-lightgbm+stop-hazard-lightgbm",
+  "model_version": "scope-timing",
   "objects": [
     {
       "object_id": "obj_20260520_0540_00002",

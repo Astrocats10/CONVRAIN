@@ -17,7 +17,7 @@ def test_pipeline_memory_soak_and_sla():
     # Use smaller domain to speed up testing
     cfg["domain"] = {"lon_min": 100.0, "lat_min": 10.0, "lon_max": 102.0, "lat_max": 12.0}
     
-    pipe = ConvRainPipeline(cfg, None, None, None, RainRateLUT())
+    pipe = ConvRainPipeline(cfg, rain_lut=RainRateLUT())
     
     process = psutil.Process(os.getpid())
     gc.collect()

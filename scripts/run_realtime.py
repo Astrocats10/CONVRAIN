@@ -28,7 +28,7 @@ from convrain.config import load_config
 from convrain.ingest import read_ahi_hsd
 from convrain.output import write_scan_outputs
 from convrain.pipeline import ConvRainPipeline
-from preprocess_ahi import group_hsd
+from preprocess_ahi import group_hsd, hsd_glob
 
 MONITOR_FIELDS = ["scan_time", "processed_at", "n_objects", "n_warnings", "total_ms", "n_errors",
                   "mean_min_bt", "mean_btd_wv_cold", "mean_ttd_cold", "latency_s"]
@@ -58,7 +58,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--watch-dir", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--models-dir", default=None)
+    ap.add_argument("--models-dir", default=None, help="rain_lut.npz / timing_params.json (ไม่ใส่ = ค่าที่ติดมากับโค้ด)")
+    ap.add_argument("--points", default=None, help="CSV (key, lat, lon) สำหรับเวลาฝนเริ่ม / หนักสุด / หยุด รายจุด")
     ap.add_argument("--state", default=None, help="ไฟล์ state (default: <out>/state.pkl)")
     ap.add_argument("--config", default=None)
     ap.add_argument("--poll-s", type=int, default=30)
@@ -69,10 +70,10 @@ def main() -> None:
     args = ap.parse_args()
 
     cfg = load_config(args.config)
-    onset, peak, stop, lut, meta = _common.load_models(args.models_dir)
-    if meta.get("warn_threshold") is not None:
-        cfg["onset"]["warn_threshold"] = meta["warn_threshold"]
-    pipe = ConvRainPipeline(cfg, onset, peak, stop, lut)
+    lut, meta = _common.load_models(args.models_dir, cfg)
+    if args.points:
+        cfg["timing"]["points_file"] = args.points
+    pipe = ConvRainPipeline(cfg, rain_lut=lut)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     state = Path(args.state) if args.state else out / "state.pkl"
@@ -90,7 +91,7 @@ def main() -> None:
 
     bands = cfg["satellite"]["bands"]
     while True:
-        groups = group_hsd(sorted(Path(args.watch_dir).rglob("HS_H0*_FLDK*")))
+        groups = group_hsd(sorted(Path(args.watch_dir).rglob(hsd_glob(cfg))), cfg["satellite"].get("area", "FLDK"))
         pending = []
         for t, by_band in sorted(groups.items()):
             if pipe.prev_time is not None and t <= pipe.prev_time:
@@ -108,7 +109,7 @@ def main() -> None:
                 print(f"{t:%Y-%m-%d %H:%M} ผิดพลาด: {exc}")
                 continue
             if not res.skipped:
-                write_scan_outputs(out, res.document, res.footprints, res.timeseries)
+                write_scan_outputs(out, res.document, res.footprints, res.timeseries, points=res.points)
             pipe.save_state(state)
 
             ts = res.timeseries

@@ -2,45 +2,8 @@
 from datetime import datetime, timezone
 
 import numpy as np
-import pandas as pd
-import pytest
 
-from convrain.models.baseline import (
-    ClimatologyBaseline,
-    ExtrapolationBaseline,
-    MB06InterestFields,
-)
-from convrain.models.hazard import HazardModel
 from convrain.parallax import cloud_top_height_km, parallax_correct
-
-
-def test_monotonic_probability_across_all_models():
-    """ตรวจสอบกฎความน่าจะเป็น $P(onset <= 30 min) <= P(onset <= 60 min)$ ในทุกโมเดล"""
-    # 1. MB06
-    mb = MB06InterestFields()
-    rows_mb = pd.DataFrame([{
-        "object_id": "c1", "min_bt": 240.0, "min_since_below_0c": 10.0, "d_cold_bt_10": -5.0,
-        "d_cold_bt_30": -12.0, "btd_wv_cold": -18.0, "btd_co2_cold": -12.0,
-        "d_btd_wv_10": 4.0, "d_btd_co2_10": 4.0,
-    }])
-    p_mb = mb.predict(rows_mb)
-    assert (p_mb["p30"] <= p_mb["p60"] + 1e-6).all()
-
-    # 2. Extrapolation
-    extrap = ExtrapolationBaseline()
-    rows_ex = pd.DataFrame([
-        {"object_id": "e1", "cold_bt_kf": 250.0, "cooling_rate_kf": -4.0},
-        {"object_id": "e2", "cold_bt_kf": 230.0, "cooling_rate_kf": -2.0},
-    ])
-    p_ex = extrap.predict(rows_ex)
-    assert (p_ex["p30"] <= p_ex["p60"] + 1e-6).all()
-
-    # 3. Climatology
-    clim = ClimatologyBaseline()
-    clim.table = pd.Series([0.2, 0.4, 0.6], index=[12, 13, 14])
-    rows_cl = pd.DataFrame([{"object_id": "cl1", "lst_hours": 13.5}])
-    p_cl = clim.predict(rows_cl)
-    assert (p_cl["p30"] <= p_cl["p60"] + 1e-6).all()
 
 
 def test_parallax_physical_shift_direction_and_scaling():

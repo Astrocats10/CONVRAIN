@@ -9,7 +9,8 @@
        ขยายขอบ buffer แล้วหา max dBZ ในแต่ละ frame เรดาร์ (object_radar_stats)
        pipeline บันทึกค่าเหล่านี้ลงตาราง object-scan
     3. สรุปต่อ track: t_onset, t_peak, t_stop, censor_time (build_track_labels)
-    4. เติม label กลับเข้าไปในตาราง object-scan (attach_labels) → ใช้ train hazard model
+    4. เติม label กลับเข้าไปในตาราง object-scan (attach_labels) → ใช้ตรวจผลรายวัตถุ
+การปรับเทียบเวลาฝนรายจุดใช้ convrain/scope/calibrate.py (ฝนที่จุด ไม่ใช่ label ต่อ track)
 
 นิยาม onset: dBZ ≥ 35 ครั้งแรก (Mecikalski & Bedka 2006)
 """

@@ -220,13 +220,15 @@ def scan_stamp(t: datetime) -> str:
 
 
 def write_scan_outputs(out_dir: str | Path, doc: dict, footprints: dict[str, list] | None,
-                       timeseries: pd.DataFrame | None, write_json: bool = True) -> dict[str, Path]:
+                       timeseries: pd.DataFrame | None, write_json: bool = True,
+                       points: pd.DataFrame | None = None) -> dict[str, Path]:
     """
     โครงสร้างโฟลเดอร์
         out_dir/json/objects_<stamp>.json            เอกสารต่อ scan (หัวข้อ 9.5)
         out_dir/geojson/objects_<stamp>.geojson       FeatureCollection ของจุด
         out_dir/geojson/footprints_<stamp>.geojson    polygon ของแต่ละ object
         out_dir/timeseries/date=YYYY-MM-DD/scan_<HHMM>.parquet
+        out_dir/points/date=YYYY-MM-DD/points_<HHMM>.csv   เวลาฝนเริ่ม / หนักสุด / หยุด รายจุด (ถ้ามี)
     """
     out = Path(out_dir)
     t = pd.Timestamp(doc["scan_time"])
@@ -242,6 +244,13 @@ def write_scan_outputs(out_dir: str | Path, doc: dict, footprints: dict[str, lis
         p = d / f"scan_{t:%H%M}.parquet"
         timeseries.to_parquet(p, index=False)
         paths["parquet"] = p
+
+    if points is not None and len(points):
+        d = out / "points" / f"date={t:%Y-%m-%d}"
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / f"points_{t:%H%M}.csv"
+        points.to_csv(p, index=False, date_format="%Y-%m-%dT%H:%M:%SZ", float_format="%.4g")
+        paths["points"] = p
     return paths
 
 

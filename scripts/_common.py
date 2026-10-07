@@ -1,4 +1,4 @@
-"""ฟังก์ชันใช้ร่วมกันของสคริปต์ (หาไฟล์ตามเวลา, โหลดโมเดล)"""
+"""ฟังก์ชันใช้ร่วมกันของสคริปต์ (หาไฟล์ตามเวลา, โหลด rain LUT + ค่าคงที่ของส่วนทำนายเวลา)"""
 from __future__ import annotations
 
 import json
@@ -29,22 +29,26 @@ def files_by_time(directory: str | Path, pattern: str) -> list[tuple[datetime, P
     return sorted(out)
 
 
-def load_models(models_dir: str | Path | None):
+TIMING_PARAMS = "timing_params.json"
+
+
+def load_models(models_dir: str | Path | None, cfg: dict):
     """
-    โหลดโมเดลทั้งหมดจากโฟลเดอร์ที่ train.py สร้าง
-    คืน (onset, peak, stop, lut, meta) ตัวที่ไม่มีไฟล์จะเป็น None
+    โฟลเดอร์โมเดล (ทางเลือก):
+        rain_lut.npz        จาก build_lut.py (rain rate ของขั้น 6)
+        timing_params.json  จาก calibrate_timing.py (ค่าคงที่ของส่วนทำนายเวลา; ไม่มี = ค่าที่ติดมากับโค้ด)
+        meta.json           ค่าเสริม เช่น warn_threshold
+    ตั้ง cfg["timing"] ตามไฟล์ที่มี แล้วคืน (lut, meta)
     """
     from convrain.intensity import RainRateLUT
-    from convrain.models.hazard import HazardModel
 
     if models_dir is None:
-        return None, None, None, None, {}
+        return None, {}
     d = Path(models_dir)
-
-    def opt(name):
-        p = d / f"model_{name}.joblib"
-        return HazardModel.load(p) if p.exists() else None
-
-    lut = RainRateLUT.load(d / "rain_lut.npz") if (d / "rain_lut.npz").exists() else None
+    if (d / TIMING_PARAMS).exists():
+        cfg["timing"]["params_file"] = str(d / TIMING_PARAMS)
     meta = json.loads((d / "meta.json").read_text()) if (d / "meta.json").exists() else {}
-    return opt("onset"), opt("peak"), opt("stop"), lut, meta
+    if meta.get("warn_threshold") is not None:
+        cfg["timing"]["warn_threshold"] = meta["warn_threshold"]
+    lut = RainRateLUT.load(d / "rain_lut.npz") if (d / "rain_lut.npz").exists() else None
+    return lut, meta

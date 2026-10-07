@@ -17,6 +17,7 @@ satellite:
   sub_lon: 140.7            # ลองจิจูดจุดใต้ดาวเทียม (องศาตะวันออก)
   orbit_radius_km: 42164.0  # รัศมีวงโคจรค้างฟ้าจากศูนย์กลางโลก
   scan_interval_min: 10     # full disk ทุก 10 นาที
+  area: FLDK                # ชนิดภาพในชื่อไฟล์ HSD: FLDK = เต็มดวง, JP01 = พื้นที่ญี่ปุ่นภาพย่อยแรกของทุก 10 นาที
   # band ที่ใช้: B08=6.2, B10=7.3, B11=8.6, B13=10.4, B14=11.2, B15=12.4, B16=13.3 µm
   bands: [B08, B10, B11, B13, B14, B15, B16]
 
@@ -68,15 +69,18 @@ features:
   trend_windows_min: [10, 20, 30]
   cold_fraction: 0.1        # ใช้ค่าเฉลี่ยของ 10% pixel ที่เย็นที่สุด
 
-# ---------- ขั้น 5: Onset (หัวข้อ 8) ----------
-onset:
-  prefilter_max_min_bt: 283.0   # ส่งเข้าโมเดลเฉพาะ object ที่ min BT < ค่านี้
-  prefilter_min_age_scans: 2    # และมีอายุอย่างน้อยกี่ scan
-  horizon_steps: 6              # 6 ช่วง × 10 นาที = 60 นาที
-  step_min: 10
-  warn_threshold: 0.5           # P(onset ≤ 30 นาที) ที่ใช้ออกคำเตือน (จูนจาก CSI บน validation)
-  eta_quantiles: [0.25, 0.5, 0.75]
-  eta_min_halfwidth_min: 5.0    # ช่วง ETA กว้างอย่างน้อย ±5 นาที (เพดานจาก scan ทุก 10 นาที)
+# ---------- ขั้น 5: เวลาฝนเริ่ม / หนักสุด / หยุด (convrain/scope, อ่าน convrain/scope/README.md) ----------
+timing:
+  footprint_k: 238.0        # รอยเมฆพาความร้อน = พิกเซลของวัตถุที่ B13 < ค่านี้
+  core_k: 235.0             # แกนลึก (ระดับ deep convection ของเขตร้อน = detect.thresholds_k ตัวที่ 3)
+  core_min_px: 4            # นาฬิกา t0 เริ่มเมื่อแกนมี ≥ จำนวนพิกเซลนี้ (= detect.min_area_px)
+  parallax_top_k: 220.0     # ยอดเมฆเย็นสมมติ สำหรับหน้าต่างรอบจุด (depth_6)
+  pixel_match_km: 1.5       # พิกเซลที่ตำแหน่งหลังแก้ parallax ห่างจุด ≤ ค่านี้ = พิกเซลเหนือจุด
+  depth_disc_px: 3          # รัศมี (พิกเซล) ของหน้าต่างหายอดเมฆลึกสุดใกล้จุด (≈ 6 km)
+  d2_max: 16.0              # ทายให้จุดที่อยู่ภายใน 4σ ของวงรีแกน (d² < 16)
+  warn_threshold: 0.5       # P(ฝนเริ่มภายใน 30 นาที) ที่ออกคำเตือน
+  points_file: null         # CSV (key, lat, lon) ของจุดที่ต้องการเวลารายจุด; null = รายวัตถุอย่างเดียว
+  params_file: null         # JSON ค่าคงที่จาก scripts/calibrate_timing.py; null = ค่าที่ติดมากับโค้ด
 
 # ---------- ขั้น 6: Intensity / lifecycle (หัวข้อ 9) ----------
 intensity:
@@ -97,5 +101,5 @@ labels:
 
 # ---------- Output (หัวข้อ 9.5) ----------
 output:
-  model_version: untrained
+  model_version: scope-timing
   write_footprints: true

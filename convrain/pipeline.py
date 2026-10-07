@@ -7,8 +7,8 @@ Pipeline หลัก: รวมขั้น 0–6 เป็น step() ต่อ
       ขั้น 2  motion field                            motion.py
       ขั้น 3  tracking + Kalman                       track.py
       ขั้น 4  features                                features.py
-      ขั้น 5  prefilter + onset hazard model          models/hazard.py
-      ขั้น 6  parallax, rain rate, lifecycle, peak/stop   parallax.py, intensity.py
+      ขั้น 5  เวลาฝนเริ่ม / หนักสุด / หยุด            scope/ (ScopeTiming)
+      ขั้น 6  parallax, rain rate, lifecycle          parallax.py, intensity.py
       Output  JSON / GeoJSON / Parquet + validation   output.py
 
 หลักการสำคัญ (หัวข้อ 18.1): ทุกขั้นรับ state + scan ใหม่แล้วคืน state ใหม่
@@ -19,7 +19,7 @@ from __future__ import annotations
 import pickle
 import time as _time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -30,10 +30,10 @@ from .features import compute_features
 from .ingest import Scan, prepare_geometry, quality_check
 from .intensity import RainRateLUT, object_rain, stop_eta_fallback, update_status
 from .labels import lut_pairs, object_radar_stats
-from .models.hazard import HazardModel
 from .motion import MotionEstimator
 from .output import footprint_polygon, object_record, scan_document, scan_stamp, validate_output
 from .parallax import correct_object
+from .scope import ScopeTiming, TimingResult
 from .track import Track, Tracker
 
 HISTORY_KEEP = 8  # เก็บ history ต่อ track ย้อนหลัง 8 scan (พอสำหรับแนวโน้ม 30 นาที)
@@ -46,19 +46,21 @@ class ScanResult:
     document: dict | None = None                 # JSON ต่อ scan (หัวข้อ 9.5)
     footprints: dict = field(default_factory=dict)
     timeseries: pd.DataFrame | None = None       # แถว object-scan ของ scan นี้
+    points: pd.DataFrame | None = None           # เวลาฝนรายจุด (เฉพาะเมื่อตั้ง timing.points_file)
     closed_tracks: pd.DataFrame | None = None    # track ที่ปิดใน scan นี้ (ใช้ทำ censor ตอนสร้าง label)
     timings_ms: dict = field(default_factory=dict)
     errors: list = field(default_factory=list)
 
 
 class ConvRainPipeline:
-    def __init__(self, cfg: dict, onset_model: HazardModel | None = None,
-                 peak_model: HazardModel | None = None, stop_model: HazardModel | None = None,
-                 rain_lut: RainRateLUT | None = None, collect_lut_pairs: bool = False):
+    def __init__(self, cfg: dict, timing: ScopeTiming | None = None, rain_lut: RainRateLUT | None = None,
+                 collect_lut_pairs: bool = False, collect_timing_rows: bool = False):
+        """
+        timing              : ส่วนทำนายเวลา (ไม่ใส่ = สร้างจาก cfg["timing"] พร้อมค่าคงที่ที่ติดมากับโค้ด)
+        collect_timing_rows : เก็บแถวรายจุด (ตัวแปรครบ) ไว้ปรับเทียบ (scripts/calibrate_timing.py)
+        """
         self.cfg = cfg
-        self.onset_model = onset_model
-        self.peak_model = peak_model
-        self.stop_model = stop_model
+        self.timing = timing or ScopeTiming(cfg, collect_rows=collect_timing_rows)
         self.lut = rain_lut or RainRateLUT()   # ยังไม่ calibrate = ใช้ prior auto-estimator
         self.motion = MotionEstimator(cfg)
         self.tracker = Tracker(cfg)
@@ -69,8 +71,7 @@ class ConvRainPipeline:
 
     @property
     def model_version(self) -> str:
-        parts = [m.version for m in (self.onset_model, self.peak_model, self.stop_model) if m is not None]
-        return "+".join(parts) if parts else self.cfg["output"]["model_version"]
+        return self.timing.version
 
     # =================================================================
     # ฟังก์ชันหลัก: ประมวลผล 1 scan
@@ -100,6 +101,7 @@ class ConvRainPipeline:
                 # ข้อมูลขาดนานเกินไป: ปิด track ทั้งหมดแล้วเริ่มใหม่
                 self.tracker.reset()
                 self.motion.reset()
+                self.timing.reset()
                 self.prev_ir = None
                 dt_min = float(cfg["satellite"]["scan_interval_min"])
         tm["preprocess"] = _time.perf_counter() - t0
@@ -130,14 +132,15 @@ class ConvRainPipeline:
         fdf = pd.DataFrame(feats)
         tm["features"] = _time.perf_counter() - t
 
-        # ---------------- [ขั้น 5] prefilter + onset model ----------------
+        # ---------------- [ขั้น 5] เวลาฝนเริ่ม / หนักสุด / หยุด ----------------
         t = _time.perf_counter()
-        onset_pred = self._predict_onset(upd.observed, fdf)
-        tm["onset_model"] = _time.perf_counter() - t
+        timing = self.timing.step(scan, upd.observed)
+        onset_pred = self._onset_fields(upd.observed, timing)
+        tm["timing"] = _time.perf_counter() - t
 
-        # ---------------- [ขั้น 6] parallax, rain, lifecycle, peak/stop ----------------
+        # ---------------- [ขั้น 6] parallax, rain, lifecycle ----------------
         t = _time.perf_counter()
-        records, footprints, extra_rows = self._stage6(scan, upd.observed, feats, onset_pred, radar_frames,
+        records, footprints, extra_rows = self._stage6(scan, upd.observed, feats, onset_pred, timing, radar_frames,
                                                        radar_rainrate)
         # track ที่ปิดใน scan นี้ → ส่งออกเป็น status dissipated
         closed_rows = []
@@ -162,49 +165,41 @@ class ConvRainPipeline:
 
         self.prev_ir, self.prev_time = scan.ir.copy(), scan.time
         tm["total"] = _time.perf_counter() - t0
-        return ScanResult(time=scan.time, document=doc, footprints=footprints, timeseries=ts,
+        return ScanResult(time=scan.time, document=doc, footprints=footprints, timeseries=ts, points=timing.points,
                           closed_tracks=pd.DataFrame(closed_rows) if closed_rows else None,
                           timings_ms={k: round(v * 1000, 2) for k, v in tm.items()}, errors=errors)
 
     # -----------------------------------------------------------------
-    # [ขั้น 5] prefilter + hazard model
+    # [ขั้น 5] ช่อง onset ของ output จากส่วนทำนายเวลา
     # -----------------------------------------------------------------
-    def _predict_onset(self, tracks: list[Track], fdf: pd.DataFrame) -> dict[str, dict]:
+    @staticmethod
+    def _onset_fields(tracks: list[Track], timing: TimingResult) -> dict[str, dict]:
         """
-        [8.1] ส่งเข้าโมเดลเฉพาะ track ที่ยัง developing และผ่านเงื่อนไขหลวม ๆ
-        [8.2] ได้ P30, P60, ETA ± ช่วง แปลงเวลาเป็น datetime
+        P30, P60 และ ETA (มัธยฐาน, ช่วง 50 % = q25 … q75) ของฝนเริ่มที่พื้นใต้ศูนย์กลางแกน
+        ทุก track ที่มีคำทำนาย (นาฬิกาเริ่มเมื่อมีแกน < core_k ซึ่งสถานะจาก rain LUT อาจเป็น raining แล้ว);
+        output แสดงเฉพาะสถานะ developing / raining; expected_onset ใช้เปลี่ยนสถานะเฉพาะ track ที่ยัง developing
         """
-        oc = self.cfg["onset"]
-        if self.onset_model is None or not len(fdf):
-            return {}
-        ok = np.array([tr.status == "developing" for tr in tracks]) \
-            & (fdf["min_bt"].values < oc["prefilter_max_min_bt"]) \
-            & (fdf["n_scans"].values >= oc["prefilter_min_age_scans"])
-        if not ok.any():
-            return {}
-        rows = fdf[ok]
-        pred = self.onset_model.predict(rows, quantiles=tuple(oc["eta_quantiles"]))
         out = {}
-        for tr, (_, r) in zip([tr for tr, k in zip(tracks, ok) if k], pred.iterrows()):
+        for tr in tracks:
+            rec = timing.objects.get(tr.track_id)
+            if rec is None:
+                continue
+            on = rec["onset"]
             now = tr.last_time
-
-            def at(m):
-                return now + timedelta(minutes=float(m)) if np.isfinite(m) else None
-
-            out[tr.track_id] = {"p30": r["p30"], "p60": r["p60"], "eta_median": at(r["eta_median_min"]),
-                                "eta_lo": at(r["eta_lo_min"]), "eta_hi": at(r["eta_hi_min"]),
-                                "eta_median_min": r["eta_median_min"], "eta_lo_min": r["eta_lo_min"],
-                                "eta_hi_min": r["eta_hi_min"]}
-            if out[tr.track_id]["eta_median"] is not None:
-                tr.expected_onset = out[tr.track_id]["eta_median"]
+            mins = {k: (on[k] - now).total_seconds() / 60.0 for k in ("q25", "q50", "q75")}
+            out[tr.track_id] = {"p30": on["p30"], "p60": on["p60"], "eta_median": on["q50"], "eta_lo": on["q25"],
+                                "eta_hi": on["q75"], "eta_median_min": mins["q50"], "eta_lo_min": mins["q25"],
+                                "eta_hi_min": mins["q75"]}
+            if tr.status == "developing":
+                tr.expected_onset = on["q50"]
         return out
 
     # -----------------------------------------------------------------
-    # [ขั้น 6] parallax, rain rate, lifecycle, peak/stop + output record
+    # [ขั้น 6] parallax, rain rate, lifecycle + output record
     # -----------------------------------------------------------------
-    def _stage6(self, scan, tracks, feats, onset_pred, radar_frames, radar_rainrate):
+    def _stage6(self, scan, tracks, feats, onset_pred, timing: TimingResult, radar_frames, radar_rainrate):
         cfg = self.cfg
-        warn = cfg["onset"]["warn_threshold"]
+        warn = cfg["timing"]["warn_threshold"]
         records, footprints, extra = [], {}, []
         stamp = scan_stamp(scan.time)
 
@@ -218,23 +213,21 @@ class ConvRainPipeline:
             on = onset_pred.get(tr.track_id)
             # [9.1] rain rate: คำนวณเฉพาะ object ที่มีโอกาส (ลด compute ตามหลักการในหัวข้อ 9)
             need_rain = (tr.status != "developing" or (on is not None and on["p30"] >= warn)
-                         or self.onset_model is None or obj.min_bt < 253.0)
+                         or obj.min_bt < 253.0)
             rain = object_rain(tr, scan, self.lut, cfg) if need_rain else \
                 {"rain_rate_max_mmh": 0.0, "rain_rate_mean_mmh": 0.0, "rain_area_km2": 0.0}
 
             # [9.2–9.3] lifecycle
             status = update_status(tr, f, rain, scan.time, cfg, onset_eta=tr.expected_onset)
 
-            # peak / stop ETA: ใช้ hazard model ถ้ามี ไม่มีใช้ fallback
+            # peak / stop ETA (มัธยฐาน) จากส่วนทำนายเวลา; ไม่มีคำทำนาย (ยังไม่มีแกนลึก) และกำลังสลาย → fallback
+            rec = timing.objects.get(tr.track_id)
             peak_eta = stop_eta = None
-            one = pd.DataFrame([f])
-            if status == "raining" and self.peak_model is not None:
-                m = self.peak_model.predict(one)["eta_median_min"].iloc[0]
-                peak_eta = scan.time + timedelta(minutes=float(m)) if np.isfinite(m) else None
+            if status == "raining" and rec is not None:
+                peak_eta = rec["peak"]["q50"]
             if status in ("raining", "peak", "decaying"):
-                if self.stop_model is not None:
-                    m = self.stop_model.predict(one)["eta_median_min"].iloc[0]
-                    stop_eta = scan.time + timedelta(minutes=float(m)) if np.isfinite(m) else None
+                if rec is not None:
+                    stop_eta = rec["stop"]["q50"]
                 elif status == "decaying":
                     stop_eta = stop_eta_fallback(f, self.lut, scan.time, cfg)
 
@@ -250,8 +243,9 @@ class ConvRainPipeline:
                     footprints[tr.track_id] = ring
                     ref = f"footprints_{stamp}.geojson#{tr.track_id}"
 
-            records.append(object_record(tr, f, px, on if status == "developing" else None, intensity, ref,
-                                         cfg["parallax"]["enabled"]))
+            # เวลาฝนเริ่มที่พื้นใต้แกน: แสดงเฉพาะช่วงที่ยังมีความหมาย (ก่อนถึงจุดสูงสุด)
+            records.append(object_record(tr, f, px, on if status in ("developing", "raining") else None, intensity,
+                                         ref, cfg["parallax"]["enabled"]))
 
             # แถวเสริมของตาราง object-scan
             row = {"object_id": tr.track_id, "status": status, **rain,
@@ -260,7 +254,10 @@ class ConvRainPipeline:
                    "eta_median_min": on["eta_median_min"] if on else np.nan,
                    "eta_lo_min": on["eta_lo_min"] if on else np.nan,
                    "eta_hi_min": on["eta_hi_min"] if on else np.nan,
-                   "warning": bool(on is not None and on["p30"] >= warn)}
+                   "warning": bool(on is not None and on["p30"] >= warn),
+                   "t0": rec["t0"] if rec else pd.NaT, "clock_age_min": rec["age_min"] if rec else np.nan,
+                   "peak_q50": rec["peak"]["q50"] if rec else pd.NaT,
+                   "stop_q50": rec["stop"]["q50"] if rec else pd.NaT}
 
             # label จากเรดาร์ (เฉพาะตอน replay เพื่อ train, หัวข้อ 10.2)
             if radar_frames is not None:
@@ -285,8 +282,11 @@ class ConvRainPipeline:
     # บันทึก / กู้คืน state (ใช้ตอน real-time เพื่อ restart ได้โดยไม่เสีย track, หัวข้อ 17 Phase 7)
     # =================================================================
     def save_state(self, path: str | Path) -> None:
+        # ส่วนทำนายเวลา: นาฬิกาสายตระกูล + ภาพล่าสุด (ไม่เก็บดัชนีค้นหา สร้างใหม่ได้)
+        scans = [(t, {k: v for k, v in img.items() if k != "ci"}) for t, img in self.timing.columns.scans]
         state = {"tracker": self.tracker, "motion_prev": self.motion.prev,
-                 "prev_ir": self.prev_ir, "prev_time": self.prev_time}
+                 "prev_ir": self.prev_ir, "prev_time": self.prev_time,
+                 "timing_book": self.timing.lineages.book, "timing_scans": scans}
         with open(path, "wb") as f:
             pickle.dump(state, f)
 
@@ -296,3 +296,5 @@ class ConvRainPipeline:
         self.tracker = state["tracker"]
         self.motion.prev = state["motion_prev"]
         self.prev_ir, self.prev_time = state["prev_ir"], state["prev_time"]
+        self.timing.lineages.book = state.get("timing_book", {})
+        self.timing.columns.scans = state.get("timing_scans", [])

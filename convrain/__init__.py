@@ -7,7 +7,7 @@ convrain: ระบบตรวจจับและพยากรณ์เว�
     motion     ขั้น 2  optical flow (motion field เดียว)
     track      ขั้น 3  online tracking + Kalman filter
     features   ขั้น 4  interest fields ต่อ object
-    models     ขั้น 5  hazard model สำหรับ onset / peak / stop + baseline
+    scope      ขั้น 5  เวลาฝนเริ่ม / หนักสุด / หยุด รายวัตถุและรายจุด (อ่าน scope/README.md)
     intensity  ขั้น 6  rain rate LUT, lifecycle status
     parallax   ขั้น 6  parallax correction
     output     หัวข้อ 9.5  JSON/GeoJSON/Parquet + validation

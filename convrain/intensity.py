@@ -168,8 +168,8 @@ def update_status(track: Track, feats: dict, rain: dict, time: datetime, cfg: di
 
 def stop_eta_fallback(feats: dict, lut: RainRateLUT, time: datetime, cfg: dict) -> datetime | None:
     """
-    ใช้เมื่อยังไม่มีโมเดล stop: extrapolate การอุ่นขึ้นของแกนเย็นไปหา BT ที่ rain rate ต่ำกว่าเกณฑ์
-    (หัวข้อ 9.3 — ค่านี้หยาบ ควรแทนด้วย hazard model ของ stop เมื่อ train แล้ว)
+    ใช้เมื่อส่วนทำนายเวลา (convrain/scope) ยังไม่มีคำทำนายของ track นี้ (ยังไม่มีแกนลึก):
+    extrapolate การอุ่นขึ้นของแกนเย็นไปหา BT ที่ rain rate ต่ำกว่าเกณฑ์ (หัวข้อ 9.3 — ค่านี้หยาบ)
     """
     rate = feats["cooling_rate_kf"]
     if not np.isfinite(rate) or rate <= 0.2:

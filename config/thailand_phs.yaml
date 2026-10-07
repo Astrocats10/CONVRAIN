@@ -1,0 +1,11 @@
+# =====================================================================
+# ไทย — โดเมนรัศมี 240 km รอบเรดาร์พิษณุโลก (ข้อมูลตัวอย่างใน data/Thai)
+# เกณฑ์ทั้งหมดเป็นของไทยใน default.yaml แล้ว ไฟล์นี้เปลี่ยนแค่โดเมน
+# (โดเมนนี้อยู่ใน HSD segment 04 ของภาพเต็มดวง จึงโหลดแค่ segment เดียวต่อแบนด์)
+#   python scripts/preprocess_ahi.py --hsd-dir data/Thai/satellite/hsd --out-dir runs/th/scans --config config/thailand_phs.yaml
+# =====================================================================
+domain:
+  lat_min: 14.4
+  lat_max: 19.2
+  lon_min: 97.6
+  lon_max: 102.8
