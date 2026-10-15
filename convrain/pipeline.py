@@ -108,7 +108,7 @@ class ConvRainPipeline:
 
         # ---------------- [ขั้น 1] detection ----------------
         t = _time.perf_counter()
-        det = detect_objects(scan, cfg)
+        det = detect_objects(scan, cfg, prev_ir=self.prev_ir)
         tm["detect"] = _time.perf_counter() - t
 
         # ---------------- [ขั้น 2] motion field ----------------
@@ -121,7 +121,7 @@ class ConvRainPipeline:
 
         # ---------------- [ขั้น 3] tracking ----------------
         t = _time.perf_counter()
-        upd = self.tracker.update(det, motion, scan.time, dt_min)
+        upd = self.tracker.update(det, motion, scan.time, dt_min, prev_ir=self.prev_ir)
         tm["track"] = _time.perf_counter() - t
 
         # ---------------- [ขั้น 4] features ----------------
@@ -243,8 +243,9 @@ class ConvRainPipeline:
                     footprints[tr.track_id] = ring
                     ref = f"footprints_{stamp}.geojson#{tr.track_id}"
 
-            # เวลาฝนเริ่มที่พื้นใต้แกน: แสดงเฉพาะช่วงที่ยังมีความหมาย (ก่อนถึงจุดสูงสุด)
-            records.append(object_record(tr, f, px, on if status in ("developing", "raining") else None, intensity,
+            # เวลาฝนเริ่มที่พื้นใต้แกน: แสดงเฉพาะช่วงที่ยังมีความหมาย (ก่อนถึงจุดสูงสุด หรือ decaying ที่ปะทุซ้ำ)
+            allow_onset = status in ("developing", "raining") or (status == "decaying" and f.get("cooling_rate_kf", 0.0) < -2.0)
+            records.append(object_record(tr, f, px, on if allow_onset else None, intensity,
                                          ref, cfg["parallax"]["enabled"]))
 
             # แถวเสริมของตาราง object-scan
@@ -254,7 +255,7 @@ class ConvRainPipeline:
                    "eta_median_min": on["eta_median_min"] if on else np.nan,
                    "eta_lo_min": on["eta_lo_min"] if on else np.nan,
                    "eta_hi_min": on["eta_hi_min"] if on else np.nan,
-                   "warning": bool(on is not None and on["p30"] >= warn),
+                   "warning": bool(allow_onset and on is not None and on["p30"] >= warn),
                    "t0": rec["t0"] if rec else pd.NaT, "clock_age_min": rec["age_min"] if rec else np.nan,
                    "peak_q50": rec["peak"]["q50"] if rec else pd.NaT,
                    "stop_q50": rec["stop"]["q50"] if rec else pd.NaT}

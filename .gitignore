@@ -45,6 +45,11 @@ web_server*.log
 /models/
 /reports/
 /nowcast/
+/CONVRAIN_OUTPUT/
+/CONVRAIN_Outputs/
+/CONVRAIN_Outputs_check/
+/CONVRAIN_Outputs_latest/
+/scratch/
 INCOMING/
 RAW/
 raw/

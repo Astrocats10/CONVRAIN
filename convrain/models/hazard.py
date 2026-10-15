@@ -93,6 +93,11 @@ class HazardModel:
     def _matrix(self, rows: pd.DataFrame, k: np.ndarray) -> pd.DataFrame:
         X = rows.reindex(columns=self.features).astype(float)
         X["k"] = k.astype(float)
+        # [Phase 3] Interaction Features: k * cooling_rate_kf และ k * (cold_bt - 250.0)
+        cooling = X["cooling_rate_kf"] if "cooling_rate_kf" in X else pd.Series(0.0, index=X.index)
+        cold_bt = X["cold_bt"] if "cold_bt" in X else (X["min_bt"] if "min_bt" in X else pd.Series(250.0, index=X.index))
+        X["k_x_cooling"] = X["k"] * cooling.fillna(0.0)
+        X["k_x_bt"] = X["k"] * (cold_bt.fillna(250.0) - 250.0)
         return X
 
     # =================================================================
@@ -180,10 +185,24 @@ class HazardModel:
         """
         h = self.predict_hazard(rows)
         F = self.cdf(h)
-        steps30 = min(int(30 // self.step_min), self.horizon_steps)
-        steps60 = min(int(60 // self.step_min), self.horizon_steps)
+        H = self.horizon_steps
+        steps30 = min(int(30 // self.step_min), H)
+        steps60 = min(int(60 // self.step_min), H)
         q_lo, q_med, q_hi = quantiles
-        med = self.quantile_minutes(F, q_med)
+
+        # [Phase 3] Conditional Expected ETA (ความน่าจะเป็นที่เกิดฝนในแต่ละช่วงเวลา k)
+        if h.shape[0] > 0:
+            surv_prev = np.hstack([np.ones((h.shape[0], 1)), np.cumprod(1.0 - h[:, :-1], axis=1)])
+            pmf = surv_prev * h
+            bin_centers = (np.arange(1, H + 1) - 0.5) * self.step_min
+            eta_expected = np.sum(pmf * bin_centers, axis=1) / np.maximum(np.sum(pmf, axis=1), 1e-6)
+            med_q = self.quantile_minutes(F, q_med)
+            # ผสาน quantile ETA ร่วมกับ Conditional Expected ETA สำหรับกลุ่มพายุที่มี hazard สูงใน scan แรกๆ
+            med = np.where(np.isfinite(med_q), np.minimum(med_q, 0.4 * med_q + 0.6 * eta_expected),
+                           np.where(np.sum(pmf, axis=1) >= 0.30, eta_expected, np.nan))
+        else:
+            med = self.quantile_minutes(F, q_med)
+
         hw = self.min_halfwidth_min
         lo = np.fmin(self.quantile_minutes(F, q_lo), np.maximum(med - hw, 0.0))
         hi = np.fmax(self.quantile_minutes(F, q_hi), med + hw)
@@ -206,7 +225,7 @@ class HazardModel:
 
     def feature_importance(self) -> pd.Series:
         """ใช้ตรวจว่าโมเดลใช้สัญญาณที่สมเหตุสมผลทางฟิสิกส์ (หัวข้อ 16, Phase 4)"""
-        cols = self.features + ["k"]
+        cols = self.features + ["k", "k_x_cooling", "k_x_bt"]
         if self.estimator == "lightgbm":
             return pd.Series(self.model.feature_importances_, index=cols).sort_values(ascending=False)
         coef = self.model[-1].coef_[0]
